@@ -132,7 +132,7 @@ static void nvme_process_cq_cpl(void *arg, int index_poller)
     int rc;
     int i;
 
-    if (BBSSD(n) || ZNSSD(n)) {
+    if (BBSSD(n) || ZNSSD(n) || FDPSSD(n)) {
         rp = n->to_poller[index_poller];
     }
 
@@ -417,6 +417,58 @@ static uint16_t nvme_write_uncor(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     return NVME_SUCCESS;
 }
 
+static uint16_t nvme_io_mgmt_recv_ruhs(FemuCtrl *n, NvmeNamespace* ns, NvmeCmd *cmd, NvmeRequest *req, size_t len)
+{
+    NvmeRuhStatus *hdr;
+    NvmeRuhStatusDescr *ruhsd;
+    unsigned int nruhsd;
+    uint16_t rg, ph, *ruhid;
+    size_t trans_len;
+    uint8_t *buf = NULL;
+    uint64_t prp1 = le64_to_cpu(cmd->dptr.prp1);
+    uint64_t prp2 = le64_to_cpu(cmd->dptr.prp2);
+
+    if (ns->id == 0 || ns->id == 0xffffffff) {
+        return NVME_INVALID_NSID | NVME_DNR;
+    }
+
+    nruhsd = n->nph * n->nrg;
+    trans_len = sizeof(NvmeRuhStatus) + nruhsd * sizeof(NvmeRuhStatusDescr);
+    buf = g_malloc(trans_len);
+    trans_len = MIN(trans_len, len);
+    hdr = (NvmeRuhStatus *)buf;
+    ruhsd = (NvmeRuhStatusDescr *)(buf + sizeof(NvmeRuhStatus));
+    hdr->nruhsd = cpu_to_le16(nruhsd);
+    ruhid = n->phs;
+
+    for (ph = 0; ph < n->nph; ph++, ruhid++) {
+        for (rg = 0; rg < n->nrg; rg++, ruhsd++) {
+            uint16_t pid = ph;
+            ruhsd->pid = cpu_to_le16(pid);
+            ruhsd->ruhid = *ruhid;
+        }
+    }
+
+    return dma_read_prp(n, buf, trans_len, prp1, prp2);
+}
+
+static uint16_t nvme_io_mgmt_recv(FemuCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd, NvmeRequest *req)
+{
+    uint32_t cdw10 = le32_to_cpu(cmd->cdw10);
+    uint32_t numd = le32_to_cpu(cmd->cdw11);
+    uint8_t mo = (cdw10 & 0xff);
+    size_t len = (numd + 1) << 2;
+
+    switch (mo) {
+    case NVME_IOMR_MO_NOP:
+        return 0;
+    case NVME_IOMR_MO_RUH_STATUS:
+        return nvme_io_mgmt_recv_ruhs(n, ns, cmd, req, len);
+    default:
+        return NVME_INVALID_FIELD | NVME_DNR;
+    };
+}
+
 static uint16_t nvme_io_cmd(FemuCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
 {
     NvmeNamespace *ns;
@@ -455,6 +507,10 @@ static uint16_t nvme_io_cmd(FemuCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
             return nvme_write_uncor(n, ns, cmd, req);
         }
         return NVME_INVALID_OPCODE | NVME_DNR;
+    case NVME_CMD_IO_MGMT_RECV:
+        return nvme_io_mgmt_recv(n, ns, cmd, req);
+    case NVME_CMD_IO_MGMT_SEND:
+        return NVME_SUCCESS;
     default:
         if (n->ext_ops.io_cmd) {
             return n->ext_ops.io_cmd(n, ns, cmd, req);

@@ -523,6 +523,8 @@ static int nvme_register_extensions(FemuCtrl *n)
         nvme_register_bbssd(n);
     } else if (ZNSSD(n)) {
         nvme_register_znssd(n);
+    } else if (FDPSSD(n)) {
+        nvme_register_fdpssd(n);
     } else {
         /* TODO: For future extensions */
     }
@@ -681,6 +683,13 @@ static Property femu_props[] = {
     DEFINE_PROP_INT32("ch_xfer_lat", FemuCtrl, bb_params.ch_xfer_lat, 0),
     DEFINE_PROP_INT32("gc_thres_pcent", FemuCtrl, bb_params.gc_thres_pcent, 75),
     DEFINE_PROP_INT32("gc_thres_pcent_high", FemuCtrl, bb_params.gc_thres_pcent_high, 95),
+    DEFINE_PROP_UINT8("fdp_num_ruh", FemuCtrl, fdp_params.fdp_num_ruh, 7),
+    DEFINE_PROP_UINT8("fdp_num_rg", FemuCtrl, fdp_params.fdp_num_rg, 1),
+    DEFINE_PROP_UINT8("fdp_num_ph", FemuCtrl, fdp_params.fdp_num_ph, 7),
+    DEFINE_PROP_UINT8("fdp_num_pi", FemuCtrl, fdp_params.fdp_num_pi, 0),
+    DEFINE_PROP_UINT64("fdp_ru_size_mb", FemuCtrl, fdp_params.fdp_ru_size, 1024*1024*1024),
+    DEFINE_PROP_INT32("fdp_gc_thres_pcent", FemuCtrl, fdp_params.fdp_gc_thres_pcent, 75),
+    DEFINE_PROP_INT32("fdp_gc_thres_pcent_high", FemuCtrl, fdp_params.fdp_gc_thres_pcent_high, 95),
     DEFINE_PROP_END_OF_LIST(),
 };
 

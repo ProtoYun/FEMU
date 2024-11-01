@@ -338,6 +338,8 @@ enum NvmeIoCommands {
     NVME_CMD_COMPARE            = 0x05,
     NVME_CMD_WRITE_ZEROES       = 0x08,
     NVME_CMD_DSM                = 0x09,
+    NVME_CMD_IO_MGMT_RECV       = 0x12,
+    NVME_CMD_IO_MGMT_SEND       = 0x1d,
     NVME_CMD_ZONE_MGMT_SEND     = 0x79,
     NVME_CMD_ZONE_MGMT_RECV     = 0x7a,
     NVME_CMD_ZONE_APPEND        = 0x7d,
@@ -425,7 +427,9 @@ typedef struct NvmeRwCmd {
     uint64_t    slba;
     uint16_t    nlb;
     uint16_t    control;
-    uint32_t    dsmgmt;
+    uint8_t     dsmgmt;
+    uint8_t     rsvd;
+    uint16_t    dspec;
     uint32_t    reftag;
     uint16_t    apptag;
     uint16_t    appmask;
@@ -1059,6 +1063,11 @@ typedef struct Oc12Ctrl Oc12Ctrl;
 typedef struct NvmeIdNsZoned NvmeIdNsZoned;
 typedef struct NvmeZone NvmeZone;
 
+typedef struct NvmeFdpEventBuffer NvmeFdpEventBuffer;
+typedef struct NvmeReclaimGroup NvmeReclaimGroup;
+typedef struct NvmeRuHandle NvmeRuHandle;
+typedef struct NvmeReclaimUnit NvmeReclaimUnit;
+
 typedef struct NvmeNamespace {
     struct FemuCtrl *ctrl;
     NvmeIdNs        id_ns;
@@ -1173,6 +1182,16 @@ typedef struct ZNSCtrlParams {
     int zns_flash_type;
 } ZNSCtrlParams;
 
+typedef struct FDPCtrlParams {
+    uint8_t  fdp_num_ruh;
+    uint8_t  fdp_num_rg;
+    uint8_t  fdp_num_ph;
+    uint8_t  fdp_num_pi;
+    int32_t  fdp_gc_thres_pcent;
+    int32_t  fdp_gc_thres_pcent_high;
+    uint64_t fdp_ru_size;
+} FDPCtrlParams;
+
 typedef struct OcCtrlParams {
     uint16_t sec_size;
     uint8_t  secs_per_pg;
@@ -1201,6 +1220,23 @@ typedef struct FemuCtrl {
     MemoryRegion    iomem;
     MemoryRegion    ctrl_mem;
     NvmeBar         bar;
+
+    NvmeFdpEventBuffer *host_events;
+    NvmeFdpEventBuffer *ctrl_events;
+    uint16_t nruh;
+    uint16_t nrg;
+    uint16_t nph;
+    uint16_t npi;
+    uint8_t  rgif;
+    uint64_t runs;
+    uint64_t hbmw;
+    uint64_t mbmw;
+    uint64_t mb_erase;
+    bool fdp_enabled;
+    uint16_t *phs;
+    NvmeRuHandle *ruhs;
+    NvmeReclaimGroup *rgs;
+    FDPCtrlParams fdp_params;
 
     /* Coperd: ZNS FIXME */
     QemuUUID        uuid;
@@ -1372,6 +1408,64 @@ typedef struct NvmeDifTuple {
     uint32_t ref_tag;
 } NvmeDifTuple;
 
+typedef enum NvmeRuDataType{
+    RU_UNUSED = 0,
+    RU_DATA = 1,
+    RU_GC = 2
+ } NvmeRuDataType;
+
+typedef struct NvmeReclaimUnit {
+    uint64_t    ruamw;
+    uint64_t    slba;
+    uint64_t       wp;
+    uint64_t    next_ru_avail_time;
+    int         ruhid;
+    int8_t*    secstas;
+    int            id;
+    uint32_t      ipc;
+    uint32_t      vpc;
+    size_t        pos;
+    int           status;
+    NvmeRuDataType dtype;
+    QTAILQ_ENTRY(NvmeReclaimUnit) entry;
+} NvmeReclaimUnit;
+
+typedef struct NvmeRuHandle {
+    uint8_t  ruht;
+    uint8_t  ruha;
+    uint64_t event_filter;
+    uint8_t  lbafi;
+    uint64_t ruamw;
+
+    /* reclaim units indexed by reclaim group */
+    NvmeReclaimUnit **rus;
+    NvmeReclaimUnit **pi_gc_rus;
+} NvmeRuHandle;
+
+typedef struct QEMU_PACKED NvmeRuhStatus {
+    uint8_t  rsvd0[14];
+    uint16_t nruhsd;
+} NvmeRuhStatus;
+
+typedef struct QEMU_PACKED NvmeRuhStatusDescr {
+    uint16_t pid;
+    uint16_t ruhid;
+    uint32_t earutr;
+    uint64_t ruamw;
+    uint8_t  rsvd16[16];
+} NvmeRuhStatusDescr;
+
+enum NvmeIoms2Mo {
+    NVME_IOMS_MO_NOP = 0x0,
+    NVME_IOMS_MO_RUH_UPDATE = 0x1,
+};
+
+enum NvmeIomr2Mo {
+    NVME_IOMR_MO_NOP = 0x00,
+    NVME_IOMR_MO_RUH_STATUS = 0x01,
+    NVME_IOMR_MO_VENDOR_SPECIFIC = 0xFF,
+};
+
 #define SQ_POLLING_PERIOD_NS	(5000)
 #define CQ_POLLING_PERIOD_NS	(5000)
 #define FEMU_MAX_INF_REQS       (65536)
@@ -1381,6 +1475,7 @@ enum {
     FEMU_BBSSD_MODE = 1,
     FEMU_NOSSD_MODE = 2,
     FEMU_ZNSSD_MODE = 3,
+    FEMU_FDPSSD_MODE = 4,
     FEMU_SMARTSSD_MODE,
     FEMU_KVSSD_MODE,
 };
@@ -1413,6 +1508,11 @@ static inline bool NOSSD(FemuCtrl *n)
 static inline bool ZNSSD(FemuCtrl *n)
 {
     return (n->femu_mode == FEMU_ZNSSD_MODE);
+}
+
+static inline bool FDPSSD(FemuCtrl *n)
+{
+    return (n->femu_mode == FEMU_FDPSSD_MODE);
 }
 
 /* Basic NVMe Queue Pair operation APIs from nvme-util.c */
@@ -1474,6 +1574,7 @@ int nvme_register_ocssd20(FemuCtrl *n);
 int nvme_register_nossd(FemuCtrl *n);
 int nvme_register_bbssd(FemuCtrl *n);
 int nvme_register_znssd(FemuCtrl *n);
+int nvme_register_fdpssd(FemuCtrl *n);
 
 static inline uint64_t ns_blks(NvmeNamespace *ns, uint8_t lba_idx)
 {
